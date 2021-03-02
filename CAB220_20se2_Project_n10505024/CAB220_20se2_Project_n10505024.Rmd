@@ -1,0 +1,265 @@
+---
+title: "Untitled"
+author: "Shu"
+date: "21/10/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+rm(list=ls()) # Clear workspace. 
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(dplyr)
+library(GGally)
+library(car)
+library(caret)
+library(DMwR)
+library(pROC)
+library(ggplot2)     
+```
+The whole data analysis process contains 5 steps in this project: 1. Data Cleaning; 2. Data Analyse; 3. Train and test set split; 4. Balance Data; 5. Modeling Data; 6. Model Selection.
+The details can be found in the report.
+```{r}
+#Read dataset into R.
+insurance <- read.csv('train.csv')
+```
+
+```{r}
+#A quick look of the data.
+head(insurance,5)
+```
+
+```{r}
+# See if there is any missing values.
+sum(is.na(insurance))
+```
+```{r}
+#A fucntion to find special values.
+is.special <- function(x){
+if (is.numeric(x)) !is.finite(x) else is.na(x)
+}
+```
+
+```{r}
+#Find number of special values if there's any.
+sum(sapply(insurance, is.special))
+```
+
+```{r}
+#An overview of data for checking consistency.
+summary(insurance)
+```
+
+```{r}
+#Revalue the dependent variable "Response" for better graph.
+insurance %>% 
+  mutate(
+    Response=factor(Response, levels=c(0,1), labels=c("Not_Interested", "Interested")),
+    Previously_Insured=factor(Previously_Insured),
+    Driving_License=factor(Driving_License),
+    Region_Code=factor(Region_Code),
+    Vehicle_Age=factor(Vehicle_Age),
+    Vehicle_Damage=factor(Vehicle_Damage)
+  ) ->insurance.revalued
+```
+
+```{r}
+#Visualize responses in "Previously_Insured"
+ggplot(data=insurance.revalued, aes(x=Previously_Insured, fill=factor(Response))) +geom_bar(width = 0.5)+
+labs(fill = "Response")
+
+```
+
+
+
+
+```{r}
+#"Previously_Insured" is a lurking variable, and now excluded observations with "Previously_Insured"==0 and id before continuing.
+insurance.revalued %>%
+  filter(Previously_Insured=="0") %>%
+  select(2:12)-> insurance.revalued.a
+```
+Each independent variable is plotted in bar chart and filled with "Response" in two levels：'Interested' and 'Not_Interested'
+```{r}
+ggplot(data=insurance.revalued.a, aes(x=Age, fill=factor(Response))) +geom_histogram(bins = 90)+
+labs(fill = "Response")
+```
+```{r}
+ggplot(data=insurance.revalued.a, aes(x=Gender, fill=factor(Response))) +geom_bar(width = 0.5)+
+labs(fill = "Response")
+```
+```{r}
+ggplot(data=insurance.revalued.a, aes(x=Driving_License, fill=factor(Response))) +geom_bar(width = 0.5)+
+labs(fill = "Response")
+
+prop.table(table(insurance.revalued$Driving_License))
+```
+
+```{r}
+ggplot(data=insurance.revalued.a, aes(x=Region_Code, fill=factor(Response))) +geom_bar(width = 0.5)+
+labs(fill = "Response")
+```
+
+
+```{r}
+ggplot(data=insurance, aes(x=Vehicle_Age, fill=factor(Response))) +geom_bar(width = 0.5)+
+labs(fill = "Response")
+```
+```{r}
+ggplot(data=insurance.revalued, aes(x=Vehicle_Age, fill=factor(Previously_Insured))) +geom_bar(width = 0.5)+
+labs(fill = "Previously_Insured")
+```
+```{r}
+ggplot(data=insurance.revalued.a, aes(x=Vehicle_Damage, fill=factor(Response))) +geom_bar(width = 0.5)+
+labs(fill = "Response")
+```
+```{r}
+ggplot(data=insurance.revalued.a, aes(x=Annual_Premium, fill=factor(Response))) +geom_histogram(bins=60)+
+labs(fill = "Response")
+```
+
+```{r}
+#Found outliers in "Annual_Premium", so value that is more than 100000 is taken out.
+insurance.revalued.b <- subset(insurance.revalued.a,insurance.revalued.a$Annual_Premium< 1*10^5)
+```
+
+
+```{r}
+#A better view of data without outliers.
+ggplot(data=insurance.revalued.b, aes(x=Annual_Premium, fill=factor(Response))) +geom_histogram(bins=60)+
+labs(fill = "Response")
+```
+```{r}
+ggplot(data=insurance.revalued.b, aes(x=Policy_Sales_Channel, fill=factor(Response))) +geom_histogram()+
+labs(fill = "Response")
+```
+```{r}
+ggplot(data=insurance.revalued.b, aes(x=Vintage, fill=factor(Response))) +geom_histogram(binwidth = 0.5)+
+labs(fill = "Response")
+```
+
+
+```{r}
+#Categorical variable should be concerted to factors.
+insurance %>% 
+  mutate(
+    Gender=factor(Gender),
+    Response=factor(Response),
+    Previously_Insured=factor(Previously_Insured),
+    Driving_License=factor(Driving_License),
+    Region_Code=factor(Region_Code),
+    Vehicle_Age=factor(Vehicle_Age),
+    Vehicle_Damage=factor(Vehicle_Damage),
+    Policy_Sales_Channel=factor(Policy_Sales_Channel)
+  ) ->insurance.factored
+```
+
+```{r}
+# Let's make this randomness reproducible
+set.seed(123) 
+
+# Sample from the row numbers without replacement
+training.rows <- sample(1:nrow(insurance.factored), 0.8 * nrow(insurance.factored))
+
+# Split the insurance data into training and test
+training.t <- insurance.factored[ training.rows,]
+testing.t <- insurance.factored[-training.rows,]
+```
+
+
+```{r}
+#Check ratio of dependent variable,interested vs not interested is nearly 1:9, the data is imbalanced.
+prop.table(table(training$Response))
+```
+Balance training set. Using SMOTE to balance more than 260000 observations is time consuming, it takes 20 minutes. So, once it's been produced, should be write into a new csv file for convenient.
+```{r}
+# training <- SMOTE(Response ~ Gender + Age + Driving_License + Region_Code + Previously_Insured + Vehicle_Age + Vehicle_Damage +
+#                     Annual_Premium + Policy_Sales_Channel + Vintage
+#                   ,training, perc.over = 100,perc.under=200)
+```
+
+```{r}
+# write.csv(training,"balanced.insurance.train.csv", row.names = FALSE)
+```
+
+```{r}
+ training <- read.csv('balanced.insurance.train.csv')
+```
+
+
+```{r}
+#Recheck the ratio, interested vs not interested is  1:1.
+prop.table(table(training$Response))
+```
+
+```{r}
+#Recheck on lurking variable "Previously_Insured", balanced data fixed the problem. 
+ggplot(data=training, aes(x=Previously_Insured, fill=factor(Response))) +geom_bar(width = 0.5)+
+labs(fill = "Response")
+```
+
+
+
+
+```{r}
+#Use rpart for Decision Tree. The predictors involved were concluded by graphs above.
+library(rpart)
+model_rf = rpart(training$Response ~Vehicle_Damage+Age+Policy_Sales_Channel+Previously_Insured+Vehicle_Age, data = training, control = rpart.control(cp = .0005))
+```
+
+
+
+
+```{r}
+tree_pred = predict(model_rf, testing, type='prob')
+```
+
+```{r}
+#Use ROC and AUC as metrics to test prediction.Plot ROC curve.
+library(ROCR)
+pred <- prediction(tree_pred[,2], testing$Response)
+perf <- performance(pred, "tpr","fpr") 
+plot(perf, col = rainbow(10))
+```
+
+
+``````{r}
+#Calculate AUC for Decision Tree model.AUC = 0.79.
+auc <- performance(pred, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+```
+
+
+```{r}
+#Use same predictors for Logistic Regression model.
+Response.glm.training <- glm(Response ~Vehicle_Damage+Age+Policy_Sales_Channel+Previously_Insured+Vehicle_Age, data=training, family="binomial")
+```
+
+```{r}
+#Have a look of p-values, AIC and deviance.
+summary(Response.glm.training)
+```
+```{r}
+#Check for multicollinearity
+vif(Response.glm.training)
+```
+
+
+```{r}
+#Use ROC and AUC to test Logistic Regression.Plot ROC curve.
+p <- predict(Response.glm.training, testing, type="response")
+pr <- prediction(p, testing$Response)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf, col = rainbow(10))
+```
+```{r}
+#AUC = 0.80
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+```
+
